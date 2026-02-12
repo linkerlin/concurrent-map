@@ -1,6 +1,7 @@
 package cmap
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -15,10 +16,11 @@ func (i Integer) String() string {
 func BenchmarkItems(b *testing.B) {
 	m := New[Animal]()
 
-	// Insert 100 elements.
+	// Insert 10000 elements.
 	for i := 0; i < 10000; i++ {
 		m.Set(strconv.Itoa(i), Animal{strconv.Itoa(i)})
 	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.Items()
 	}
@@ -27,14 +29,16 @@ func BenchmarkItems(b *testing.B) {
 func BenchmarkItemsInteger(b *testing.B) {
 	m := NewStringer[Integer, Animal]()
 
-	// Insert 100 elements.
+	// Insert 10000 elements.
 	for i := 0; i < 10000; i++ {
 		m.Set((Integer)(i), Animal{strconv.Itoa(i)})
 	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.Items()
 	}
 }
+
 func directSharding(key uint32) uint32 {
 	return key
 }
@@ -42,10 +46,11 @@ func directSharding(key uint32) uint32 {
 func BenchmarkItemsInt(b *testing.B) {
 	m := NewWithCustomShardingFunction[uint32, Animal](directSharding)
 
-	// Insert 100 elements.
+	// Insert 10000 elements.
 	for i := 0; i < 10000; i++ {
 		m.Set((uint32)(i), Animal{strconv.Itoa(i)})
 	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.Items()
 	}
@@ -54,10 +59,11 @@ func BenchmarkItemsInt(b *testing.B) {
 func BenchmarkMarshalJson(b *testing.B) {
 	m := New[Animal]()
 
-	// Insert 100 elements.
+	// Insert 10000 elements.
 	for i := 0; i < 10000; i++ {
 		m.Set(strconv.Itoa(i), Animal{strconv.Itoa(i)})
 	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := m.MarshalJSON()
 		if err != nil {
@@ -143,7 +149,7 @@ func BenchmarkMultiInsertDifferent_32_Shard(b *testing.B) {
 	runWithShards(benchmarkMultiInsertDifferent, b, 32)
 }
 func BenchmarkMultiInsertDifferent_256_Shard(b *testing.B) {
-	runWithShards(benchmarkMultiGetSetDifferent, b, 256)
+	runWithShards(benchmarkMultiInsertDifferent, b, 256)
 }
 
 func BenchmarkMultiInsertSame(b *testing.B) {
@@ -292,7 +298,6 @@ func BenchmarkMultiGetSetBlock_256_Shard(b *testing.B) {
 	runWithShards(benchmarkMultiGetSetBlock, b, 256)
 }
 
-
 func GetSet[K comparable, V any](m ConcurrentMap[K, V], finished chan struct{}) (set func(key K, value V), get func(key K, value V)) {
 	return func(key K, value V) {
 			for i := 0; i < 10; i++ {
@@ -333,11 +338,188 @@ func runWithShards(bench func(b *testing.B), b *testing.B, shardsCount int) {
 func BenchmarkKeys(b *testing.B) {
 	m := New[Animal]()
 
-	// Insert 100 elements.
+	// Insert 10000 elements.
 	for i := 0; i < 10000; i++ {
 		m.Set(strconv.Itoa(i), Animal{strconv.Itoa(i)})
 	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.Keys()
+	}
+}
+
+func BenchmarkValues(b *testing.B) {
+	m := New[int]()
+
+	// Insert 10000 elements.
+	for i := 0; i < 10000; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.Values()
+	}
+}
+
+func BenchmarkRange(b *testing.B) {
+	m := New[int]()
+
+	// Insert 10000 elements.
+	for i := 0; i < 10000; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		counter := 0
+		m.Range(func(key string, value int) bool {
+			counter++
+			return true
+		})
+	}
+}
+
+func BenchmarkIterCb(b *testing.B) {
+	m := New[int]()
+
+	// Insert 10000 elements.
+	for i := 0; i < 10000; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		counter := 0
+		m.IterCb(func(key string, value int) {
+			counter++
+		})
+	}
+}
+
+func BenchmarkIterBuffered(b *testing.B) {
+	m := New[int]()
+
+	// Insert 10000 elements.
+	for i := 0; i < 10000; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		counter := 0
+		for item := range m.IterBuffered() {
+			_ = item
+			counter++
+		}
+	}
+}
+
+func BenchmarkGetOrSet(b *testing.B) {
+	m := New[int]()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.GetOrSet(strconv.Itoa(i), i)
+	}
+}
+
+func BenchmarkGetAndSet(b *testing.B) {
+	m := New[int]()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.GetAndSet(strconv.Itoa(i), i)
+	}
+}
+
+func BenchmarkMSet(b *testing.B) {
+	data := make(map[string]int)
+	for i := 0; i < 1000; i++ {
+		data[strconv.Itoa(i)] = i
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m := New[int]()
+		m.MSet(data)
+	}
+}
+
+func BenchmarkClone(b *testing.B) {
+	m := New[int]()
+	for i := 0; i < 1000; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.Clone()
+	}
+}
+
+func BenchmarkClear(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		m := New[int]()
+		for j := 0; j < 1000; j++ {
+			m.Set(strconv.Itoa(j), j)
+		}
+		b.StartTimer()
+		m.Clear()
+	}
+}
+
+// BenchmarkShardCountComparison compares performance with different shard counts
+func BenchmarkShardCountComparison(b *testing.B) {
+	for _, shards := range []int{1, 16, 32, 64, 128, 256} {
+		b.Run(fmt.Sprintf("shards-%d", shards), func(b *testing.B) {
+			oldShardCount := SHARD_COUNT
+			SHARD_COUNT = shards
+			defer func() { SHARD_COUNT = oldShardCount }()
+
+			m := New[int]()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					m.Set(strconv.Itoa(i), i)
+					i++
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkReadWriteRatio tests different read/write ratios
+func BenchmarkReadWriteRatio(b *testing.B) {
+	ratios := []struct {
+		reads  int
+		writes int
+	}{
+		{100, 0}, // Read-only
+		{90, 10}, // Read-heavy
+		{50, 50}, // Balanced
+		{10, 90}, // Write-heavy
+		{0, 100}, // Write-only
+	}
+
+	for _, ratio := range ratios {
+		name := fmt.Sprintf("reads%d-writes%d", ratio.reads, ratio.writes)
+		b.Run(name, func(b *testing.B) {
+			m := New[int]()
+			// Pre-populate
+			for i := 0; i < 1000; i++ {
+				m.Set(strconv.Itoa(i), i)
+			}
+
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					// Cycle through operations based on ratio
+					cycle := i % (ratio.reads + ratio.writes)
+					if cycle < ratio.reads {
+						m.Get(strconv.Itoa(i % 1000))
+					} else {
+						m.Set(strconv.Itoa(i%1000), i)
+					}
+					i++
+				}
+			})
+		})
 	}
 }
