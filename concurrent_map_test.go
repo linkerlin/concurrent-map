@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -20,6 +21,19 @@ func TestMapCreation(t *testing.T) {
 
 	if m.Count() != 0 {
 		t.Error("new map should be empty.")
+	}
+}
+
+func TestMapCreationWithShardCount(t *testing.T) {
+	m := NewWithShardCount[int](64)
+	if m.shardCount != 64 {
+		t.Errorf("expected shardCount to be 64, got %d", m.shardCount)
+	}
+
+	// Test with invalid shard count
+	m2 := NewWithShardCount[int](0)
+	if m2.shardCount != DefaultShardCount {
+		t.Errorf("expected shardCount to be DefaultShardCount, got %d", m2.shardCount)
 	}
 }
 
@@ -72,6 +86,61 @@ func TestGet(t *testing.T) {
 
 	if elephant.name != "elephant" {
 		t.Error("item was modified.")
+	}
+}
+
+func TestGetOrSet(t *testing.T) {
+	m := New[string]()
+
+	// First call should set the value
+	val, loaded := m.GetOrSet("key", "first")
+	if loaded {
+		t.Error("loaded should be false on first call")
+	}
+	if val != "first" {
+		t.Error("value should be 'first'")
+	}
+
+	// Second call should return existing value
+	val, loaded = m.GetOrSet("key", "second")
+	if !loaded {
+		t.Error("loaded should be true on second call")
+	}
+	if val != "first" {
+		t.Error("value should still be 'first'")
+	}
+
+	if m.Count() != 1 {
+		t.Error("map should contain exactly one element")
+	}
+}
+
+func TestGetAndSet(t *testing.T) {
+	m := New[string]()
+
+	// First call - no previous value
+	prev, loaded := m.GetAndSet("key", "first")
+	if loaded {
+		t.Error("loaded should be false when key doesn't exist")
+	}
+	var emptyStr string
+	if prev != emptyStr {
+		t.Error("previous value should be zero value")
+	}
+
+	// Second call - has previous value
+	prev, loaded = m.GetAndSet("key", "second")
+	if !loaded {
+		t.Error("loaded should be true when key exists")
+	}
+	if prev != "first" {
+		t.Error("previous value should be 'first'")
+	}
+
+	// Verify current value
+	val, _ := m.Get("key")
+	if val != "second" {
+		t.Error("current value should be 'second'")
 	}
 }
 
@@ -249,6 +318,17 @@ func TestCount(t *testing.T) {
 	}
 }
 
+func TestSize(t *testing.T) {
+	m := New[string]()
+	if m.Size() != 0 {
+		t.Error("Size should be 0 for empty map")
+	}
+	m.Set("key", "value")
+	if m.Size() != 1 {
+		t.Error("Size should be 1 after adding one element")
+	}
+}
+
 func TestIsEmpty(t *testing.T) {
 	m := New[Animal]()
 
@@ -324,6 +404,12 @@ func TestClear(t *testing.T) {
 	if m.Count() != 0 {
 		t.Error("We should have 0 elements.")
 	}
+
+	// Verify we can still use the map after Clear
+	m.Set("new", Animal{"new"})
+	if m.Count() != 1 {
+		t.Error("Map should be usable after Clear")
+	}
 }
 
 func TestIterCb(t *testing.T) {
@@ -344,6 +430,40 @@ func TestIterCb(t *testing.T) {
 	}
 }
 
+func TestRange(t *testing.T) {
+	m := New[int]()
+
+	// Insert 100 elements.
+	for i := 0; i < 100; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+
+	counter := 0
+	sum := 0
+	m.Range(func(key string, value int) bool {
+		counter++
+		sum += value
+		return true
+	})
+
+	if counter != 100 {
+		t.Errorf("We should have counted 100 elements, got %d", counter)
+	}
+	if sum != 4950 { // 0+1+2+...+99 = 4950
+		t.Errorf("Sum should be 4950, got %d", sum)
+	}
+
+	// Test early termination
+	counter = 0
+	m.Range(func(key string, value int) bool {
+		counter++
+		return counter < 10
+	})
+	if counter != 10 {
+		t.Errorf("Counter should be 10 after early termination, got %d", counter)
+	}
+}
+
 func TestItems(t *testing.T) {
 	m := New[Animal]()
 
@@ -356,6 +476,164 @@ func TestItems(t *testing.T) {
 
 	if len(items) != 100 {
 		t.Error("We should have counted 100 elements.")
+	}
+
+	// Verify all items are present
+	for i := 0; i < 100; i++ {
+		key := strconv.Itoa(i)
+		if val, ok := items[key]; !ok {
+			t.Errorf("Key %s not found in items", key)
+		} else if val.name != key {
+			t.Errorf("Value mismatch for key %s", key)
+		}
+	}
+}
+
+func TestKeys(t *testing.T) {
+	m := New[Animal]()
+
+	// Insert 100 elements.
+	for i := 0; i < 100; i++ {
+		m.Set(strconv.Itoa(i), Animal{strconv.Itoa(i)})
+	}
+
+	keys := m.Keys()
+	if len(keys) != 100 {
+		t.Error("We should have counted 100 elements.")
+	}
+
+	// Verify all keys are unique and valid
+	keyMap := make(map[string]bool)
+	for _, key := range keys {
+		if key == "" {
+			t.Error("Empty key returned")
+		}
+		if keyMap[key] {
+			t.Errorf("Duplicate key: %s", key)
+		}
+		keyMap[key] = true
+	}
+}
+
+func TestValues(t *testing.T) {
+	m := New[int]()
+
+	// Insert 100 elements.
+	for i := 0; i < 100; i++ {
+		m.Set(strconv.Itoa(i), i*2)
+	}
+
+	values := m.Values()
+	if len(values) != 100 {
+		t.Errorf("We should have 100 values, got %d", len(values))
+	}
+
+	// Calculate sum
+	sum := 0
+	for _, v := range values {
+		sum += v
+	}
+	expectedSum := 9900 // 0+2+4+...+198 = 2*(0+1+...+99) = 2*4950 = 9900
+	if sum != expectedSum {
+		t.Errorf("Sum should be %d, got %d", expectedSum, sum)
+	}
+}
+
+func TestClone(t *testing.T) {
+	m := New[int]()
+	for i := 0; i < 100; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+
+	cloned := m.Clone()
+
+	if cloned.Count() != m.Count() {
+		t.Error("Cloned map should have same count")
+	}
+
+	// Verify cloned map has same values
+	for i := 0; i < 100; i++ {
+		key := strconv.Itoa(i)
+		val, ok := cloned.Get(key)
+		if !ok {
+			t.Errorf("Key %s not found in cloned map", key)
+		}
+		if val != i {
+			t.Errorf("Value mismatch for key %s", key)
+		}
+	}
+
+	// Verify modifying clone doesn't affect original
+	cloned.Set("new", 999)
+	if m.Has("new") {
+		t.Error("Modifying clone should not affect original")
+	}
+}
+
+func TestMerge(t *testing.T) {
+	m1 := New[int]()
+	m1.Set("a", 1)
+	m1.Set("b", 2)
+
+	m2 := New[int]()
+	m2.Set("b", 20) // Should overwrite m1's "b"
+	m2.Set("c", 30)
+
+	m1.Merge(m2)
+
+	if m1.Count() != 3 {
+		t.Errorf("Merged map should have 3 elements, got %d", m1.Count())
+	}
+
+	val, _ := m1.Get("a")
+	if val != 1 {
+		t.Errorf("Value for 'a' should be 1, got %d", val)
+	}
+
+	val, _ = m1.Get("b")
+	if val != 20 {
+		t.Errorf("Value for 'b' should be 20 (overwritten), got %d", val)
+	}
+
+	val, _ = m1.Get("c")
+	if val != 30 {
+		t.Errorf("Value for 'c' should be 30, got %d", val)
+	}
+}
+
+func TestMSet(t *testing.T) {
+	animals := map[string]Animal{
+		"elephant": {"elephant"},
+		"monkey":   {"monkey"},
+	}
+	m := New[Animal]()
+	m.MSet(animals)
+
+	if m.Count() != 2 {
+		t.Error("map should contain exactly two elements.")
+	}
+
+	// Verify values
+	for name, expected := range animals {
+		actual, ok := m.Get(name)
+		if !ok {
+			t.Errorf("Key %s not found", name)
+		}
+		if actual != expected {
+			t.Errorf("Value mismatch for key %s", name)
+		}
+	}
+}
+
+func TestMSetEmpty(t *testing.T) {
+	m := New[string]()
+	m.Set("existing", "value")
+
+	emptyMap := make(map[string]string)
+	m.MSet(emptyMap)
+
+	if m.Count() != 1 {
+		t.Error("MSet with empty map should not change anything")
 	}
 }
 
@@ -418,12 +696,49 @@ func TestConcurrent(t *testing.T) {
 	}
 }
 
+func TestConcurrentGetOrSet(t *testing.T) {
+	m := New[int]()
+	var wg sync.WaitGroup
+	const numGoroutines = 100
+	const numIterations = 100
+
+	counter := 0
+	var counterMu sync.Mutex
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				key := strconv.Itoa(j)
+				_, loaded := m.GetOrSet(key, j)
+				if !loaded {
+					counterMu.Lock()
+					counter++
+					counterMu.Unlock()
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Only numIterations unique keys, so GetOrSet should have set each only once
+	if counter != numIterations {
+		t.Errorf("Expected %d new sets, got %d", numIterations, counter)
+	}
+
+	if m.Count() != numIterations {
+		t.Errorf("Expected %d elements in map, got %d", numIterations, m.Count())
+	}
+}
+
 func TestJsonMarshal(t *testing.T) {
+	oldShardCount := SHARD_COUNT
 	SHARD_COUNT = 2
-	defer func() {
-		SHARD_COUNT = 32
-	}()
-	expected := "{\"a\":1,\"b\":2}"
+	defer func() { SHARD_COUNT = oldShardCount }()
+
+	expected := `{"a":1,"b":2}`
 	m := New[int]()
 	m.Set("a", 1)
 	m.Set("b", 2)
@@ -438,30 +753,38 @@ func TestJsonMarshal(t *testing.T) {
 	}
 }
 
-func TestKeys(t *testing.T) {
-	m := New[Animal]()
+func TestNewFromJSON(t *testing.T) {
+	jsonData := `{"a":1,"b":2,"c":3}`
 
-	// Insert 100 elements.
-	for i := 0; i < 100; i++ {
-		m.Set(strconv.Itoa(i), Animal{strconv.Itoa(i)})
+	m, err := NewFromJSON[int]([]byte(jsonData))
+	if err != nil {
+		t.Errorf("NewFromJSON failed: %v", err)
 	}
 
-	keys := m.Keys()
-	if len(keys) != 100 {
-		t.Error("We should have counted 100 elements.")
+	if m.Count() != 3 {
+		t.Errorf("Expected 3 elements, got %d", m.Count())
+	}
+
+	val, _ := m.Get("a")
+	if val != 1 {
+		t.Errorf("Expected a=1, got %d", val)
 	}
 }
 
-func TestMInsert(t *testing.T) {
-	animals := map[string]Animal{
-		"elephant": {"elephant"},
-		"monkey":   {"monkey"},
+func TestNewFromJSONInvalid(t *testing.T) {
+	_, err := NewFromJSON[int]([]byte(`invalid json`))
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
 	}
-	m := New[Animal]()
-	m.MSet(animals)
+}
 
-	if m.Count() != 2 {
-		t.Error("map should contain exactly two elements.")
+func TestNewFromJSONEmpty(t *testing.T) {
+	m, err := NewFromJSON[int]([]byte(`{}`))
+	if err != nil {
+		t.Errorf("NewFromJSON of empty object failed: %v", err)
+	}
+	if m.Count() != 0 {
+		t.Errorf("Expected 0 elements, got %d", m.Count())
 	}
 }
 
@@ -471,12 +794,11 @@ func TestFnv32(t *testing.T) {
 	hasher := fnv.New32()
 	_, err := hasher.Write(key)
 	if err != nil {
-		t.Errorf(err.Error())
+		t.Errorf("hasher.Write failed: %v", err)
 	}
 	if fnv32(string(key)) != hasher.Sum32() {
 		t.Errorf("Bundled fnv32 produced %d, expected result from hash/fnv32 is %d", fnv32(string(key)), hasher.Sum32())
 	}
-
 }
 
 func TestUpsert(t *testing.T) {
@@ -640,4 +962,200 @@ func TestUnDrainedIterBuffered(t *testing.T) {
 	if counter != 200 {
 		t.Error("We should have counted 200 elements.")
 	}
+}
+
+func TestNilValues(t *testing.T) {
+	m := New[*Animal]()
+	m.Set("nil", nil)
+	val, ok := m.Get("nil")
+	if !ok {
+		t.Error("nil value should be found")
+	}
+	if val != nil {
+		t.Error("nil value should be nil")
+	}
+}
+
+func TestEmptyStringKey(t *testing.T) {
+	m := New[int]()
+	m.Set("", 42)
+
+	val, ok := m.Get("")
+	if !ok {
+		t.Error("Empty string key should be found")
+	}
+	if val != 42 {
+		t.Errorf("Value should be 42, got %d", val)
+	}
+}
+
+func TestConcurrentRemoveDuringIteration(t *testing.T) {
+	m := New[int]()
+	for i := 0; i < 1000; i++ {
+		m.Set(strconv.Itoa(i), i)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for item := range m.IterBuffered() {
+			_ = item.Val
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			m.Remove(strconv.Itoa(i))
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestConcurrentClearAndSet(t *testing.T) {
+	m := New[int]()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Writer
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			m.Set(strconv.Itoa(i), i)
+		}
+	}()
+
+	// Clearer
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			m.Clear()
+		}
+	}()
+
+	// Reader
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			m.Get(strconv.Itoa(i))
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestCustomShardingFunction(t *testing.T) {
+	// Use a simple modulo sharding for integers
+	sharding := func(key uint32) uint32 {
+		return key
+	}
+
+	m := NewWithCustomShardingFunction[uint32, string](sharding)
+	for i := uint32(0); i < 100; i++ {
+		m.Set(i, strconv.Itoa(int(i)))
+	}
+
+	if m.Count() != 100 {
+		t.Errorf("Expected 100 elements, got %d", m.Count())
+	}
+
+	for i := uint32(0); i < 100; i++ {
+		val, ok := m.Get(i)
+		if !ok {
+			t.Errorf("Key %d not found", i)
+		}
+		if val != strconv.Itoa(int(i)) {
+			t.Errorf("Value mismatch for key %d", i)
+		}
+	}
+}
+
+func TestNewWithCustomShardingFunctionAndShardCount(t *testing.T) {
+	sharding := func(key int) uint32 {
+		return uint32(key)
+	}
+
+	m := NewWithCustomShardingFunctionAndShardCount[int, string](sharding, 64)
+	if m.shardCount != 64 {
+		t.Errorf("Expected shardCount 64, got %d", m.shardCount)
+	}
+
+	// Test with invalid shard count
+	m2 := NewWithCustomShardingFunctionAndShardCount[int, string](sharding, 0)
+	if m2.shardCount != DefaultShardCount {
+		t.Errorf("Expected DefaultShardCount, got %d", m2.shardCount)
+	}
+}
+
+// TestStringerKeyType tests using a custom key type that implements Stringer
+type TestKey struct {
+	id   int
+	name string
+}
+
+func (k TestKey) String() string {
+	return strconv.Itoa(k.id) + "-" + k.name
+}
+
+func TestStringerKeyType(t *testing.T) {
+	m := NewStringer[TestKey, int]()
+
+	key1 := TestKey{1, "first"}
+	key2 := TestKey{2, "second"}
+
+	m.Set(key1, 100)
+	m.Set(key2, 200)
+
+	if m.Count() != 2 {
+		t.Errorf("Expected 2 elements, got %d", m.Count())
+	}
+
+	val1, ok := m.Get(key1)
+	if !ok || val1 != 100 {
+		t.Error("Failed to retrieve value for key1")
+	}
+
+	val2, ok := m.Get(key2)
+	if !ok || val2 != 200 {
+		t.Error("Failed to retrieve value for key2")
+	}
+}
+
+// TestRaceCondition runs various operations concurrently to detect race conditions
+func TestRaceCondition(t *testing.T) {
+	m := New[int]()
+	var wg sync.WaitGroup
+
+	// Multiple goroutines performing different operations
+	operations := []func(){
+		func() { m.Set("key", 1) },
+		func() { m.Get("key") },
+		func() { m.Has("key") },
+		func() { m.Remove("key") },
+		func() { m.Count() },
+		func() { m.Keys() },
+		func() { m.Values() },
+		func() { m.Items() },
+		func() { m.Clear() },
+		func() { m.IterBuffered() },
+		func() { m.Range(func(k string, v int) bool { return true }) },
+	}
+
+	for i := 0; i < 100; i++ {
+		for _, op := range operations {
+			wg.Add(1)
+			go func(operation func()) {
+				defer wg.Done()
+				for j := 0; j < 100; j++ {
+					operation()
+				}
+			}(op)
+		}
+	}
+
+	wg.Wait()
 }
